@@ -1,2 +1,2 @@
-/extracted_data.csv
-/sample_data.csv
+#files to ignore
+*.csv
