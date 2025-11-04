@@ -1,0 +1,5 @@
+"Study Identifier","Population","Medication Class","Study Design","Primary Outcome","Secondary Outcomes","Number of Participants","Duration (months)","Key Findings","Reference"
+"NHANES Cycle 2017-2018","US Adults, aged 20+","All antihypertensives","Observational","% with BP <130/80","Demographics, comorbidities",10000,"N/A","54% on treatment, 42% controlled BP. ACE inhibitor most common.","CDC Data Brief"
+"PMC9979505","Boston Medical Center, 2012-2020","ACE, ARB, Beta-blocker, etc","EHR + ML Model","Change in Systolic BP","Personalized recommendations",42752,96,"ML-guided prescribing achieved avg. 14.2 mmHg SBP reduction; deprescibing benefit",""
+"HypertensionAHA2023","US Adults","All antihypertensives","Open data/statistics","Hypertension control rate","Medicine use by age, race, region",36000,"N/A","1-in-5 treated adults uncontrolled; disparities by race and region",""
+"Hypertension Treatment Kaggle","Multi-center trial simulation","Thiazide, ACEi, ARB, CCB","RCT/Simulated","Systolic & Diastolic BP reduction","Dropout, side effects",1000,12,"Thiazide and ACEi most effective for BP reduction; ARB best tolerance",""
