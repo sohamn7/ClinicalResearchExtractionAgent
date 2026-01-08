@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Main script to test document retrieval functionality.
 Allows users to input prompts and upload CSV files for clinical trial data extraction.
@@ -8,9 +7,10 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
-from doc_retrieval import DocRetrieval
-from context_extract import Extract
-from llm_util import LLMClient
+from .doc_retrieval import DocRetrieval
+from .context_extract import Extract
+from .verification import Verify
+from .llm_util import LLMClient
 import json
 import pandas as pd
 
@@ -73,7 +73,8 @@ def get_user_input():
     if not file_path:
         print("❌ File path cannot be empty!")
         return None, None
-    
+
+    file_path = file_path
     # Check if file exists
     if not os.path.exists(file_path):
         print(f"❌ File not found: {file_path}")
@@ -112,7 +113,7 @@ def run_workflow(prompt, file_path):
         print("="*60)
 
         # 1. Document Retrieval
-        print("\n[Step 1/2] Retrieving documents...")
+        print("\n[Step 1/3] Retrieving documents...")
         doc_retriever = DocRetrieval(file_path, prompt)
         doc_retriever.doc_retrieval()
 
@@ -123,16 +124,47 @@ def run_workflow(prompt, file_path):
         print(f"✓ Retrieved {len(doc_retriever.info_map)} articles.")
 
         # 2. Context Extraction
-        print("\n[Step 2/2] Extracting data from documents...")
+        print("\n[Step 2/3] Extracting data from documents...")
         extractor = Extract()
         
-        final_df = extractor.context_extract(doc_retriever)
+        extracted_df = extractor.context_extract(doc_retriever)
 
-        if final_df is None or final_df.empty:
-            print("❌ Data extraction resulted in an empty dataset.")
+        if extracted_df is None or extracted_df.empty:
+            print("❌ Initial data extraction resulted in an empty dataset.")
             return None
 
-        print("✓ Data extraction complete.")
+        print("✓ Initial data extraction complete.")
+        
+        # 3. Data Quality Verification
+        print("\n[Step 3/3] Verifying and refining data quality...")
+        verifier = Verify()
+        max_retries = 3
+        is_quality_sufficient = False
+        final_df = extracted_df
+        sample_df = doc_retriever.sample_df
+
+        for i in range(max_retries):
+            print(f"\n--- Verification Attempt {i + 1}/{max_retries} ---")
+            
+            # The verify_data_quality function will regenerate if needed
+            current_df, is_quality_sufficient = verifier.verify_data_quality(
+                extracted_df=final_df,
+                sample_df=sample_df,
+                context_extractor=extractor,
+                doc_retrieval_instance=doc_retriever
+            )
+            final_df = current_df # Update to the latest dataframe
+
+            if is_quality_sufficient:
+                print("✅ Data quality meets the threshold.")
+                break
+            else:
+                if i < max_retries - 1:
+                    print("⚠️ Data quality below threshold. Retrying verification with regenerated data.")
+                else:
+                    print("❌ Max retries reached. Proceeding with the last generated dataset.")
+        
+        print("✓ Verification and refinement step complete.")
         
         return final_df
 

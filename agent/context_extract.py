@@ -1,9 +1,12 @@
 import json
-from typing import Dict, List, Any, Optional
-from llm_util import LLMClient
-from doc_retrieval import DocRetrieval
+from typing import Dict, List, Any, Optional, TYPE_CHECKING
+from .llm_util import LLMClient
 import pandas as pd
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+if TYPE_CHECKING:
+    from .doc_retrieval import DocRetrieval
 
 def clean_json_from_llm(response_text: str) -> str:
     """
@@ -65,6 +68,37 @@ class Extract:
         - Columns: ["Patient Age (years)", "Temperature (Celsius)"]
         - Text: "A 45-year-old male presented with a fever of 101°F."
         - Output: [{{'Patient Age (years)': 45, 'Temperature (Celsius)': 38.3}}]
+
+        ---
+
+        Now, perform the extraction on the provided Research Paper Text.
+        """
+        return self.llm_extract(prompt)
+
+    def extract_core_text(self, context, sample_df):
+        prompt = f"""You are a clinical data analyst. Your task is to identify and extract the most relevant sections of a research paper that contain clinical data.
+
+        Focus on finding text that contains information related to these topics:
+        {self.cols}
+
+        Use the sample data to understand the kind of information to look for:
+        {sample_df.to_json(orient='records')}
+
+        Research Paper Text:
+        {context}
+
+        ---
+        RULES:
+        1. Extract only the paragraphs or text blocks that are highly likely to contain the data for the specified topics.
+        2. Do not extract the data itself, only the surrounding text.
+        3. If no relevant text is found, return an empty string.
+        4. Combine the extracted text chunks into a single string.
+
+        ---
+        Example:
+        - Topics: ["Drug", "Dosage (mg)", "Patient Age (years)"]
+        - Text: "Abstract: This paper discusses the effects of new drugs. Introduction: ... Methods: We studied 100 patients. Results: The patient group, with an average age of 55, was administered 500mg of DrugA. Another group received placebo. Discussion: ... Conclusion: ..."
+        - Output: "The patient group, with an average age of 55, was administered 500mg of DrugA."
 
         ---
 
@@ -171,43 +205,58 @@ class Extract:
 
         return self.llm_extract(prompt)
 
-    def context_extract(self, doc_retrieval_instance: DocRetrieval):
+    def process_article(self, article, df):
+        context = article.get('text', 'no text found')
+        core_text = self.extract_core_text(context, df)
+        new_data_json_raw = self.extract_data(core_text, df)
+        
+        try:
+            cleaned_json = clean_json_from_llm(new_data_json_raw)
+            new_data = json.loads(cleaned_json)
+            
+            if isinstance(new_data, dict):
+                return [new_data]
+            elif isinstance(new_data, list):
+                return new_data
+        except (json.JSONDecodeError, TypeError):
+            print(f"Warning: Could not parse or process LLM output for an article: {new_data_json_raw}")
+        
+        return []
+
+    def context_extract(self, doc_retrieval_instance: "DocRetrieval"):
         df = doc_retrieval_instance.sample_df
-        if self.cols == []:
+        if not self.cols:
             try:
                 cols_list_raw = self.column_extract(df)
-                # print(f"llm output columns: {cols_list_raw}")
                 self.cols = json.loads(clean_json_from_llm(cols_list_raw))
-                # print(f"columns: {self.cols}")
-
-                copy_dataset_raw = self.copy_dataset(cols_list_raw, df)
-                self.output_df = pd.DataFrame(json.loads(clean_json_from_llm(copy_dataset_raw)))
+                # Initialize output_df with the determined columns, but as an empty DataFrame
+                self.output_df = pd.DataFrame(columns=self.cols)
             except Exception as e:
                 print(f"Exception: {e}")
 
         all_new_rows = []
-        # Assuming info_map values are the article dictionaries
-        for article in tqdm(doc_retrieval_instance.info_map.values(), desc="Extracting data"):
-            context = article.get('text', 'no text found')
+        articles = list(doc_retrieval_instance.info_map.values())
+        
+        with ThreadPoolExecutor() as executor:
+            # Use a lambda to pass the dataframe `df` to the worker function
+            future_to_article = {executor.submit(self.process_article, article, df): article for article in articles}
             
-            new_data_json_raw = self.extract_data(context, df)
-            
-            try:
-                # The LLM can return a single dict or a list of dicts
-                cleaned_json = clean_json_from_llm(new_data_json_raw)
-                new_data = json.loads(cleaned_json)
-                
-                if isinstance(new_data, dict):
-                    all_new_rows.append(new_data)
-                elif isinstance(new_data, list):
-                    all_new_rows.extend(new_data)
-            except (json.JSONDecodeError, TypeError):
-                # Handle cases where LLM output is not valid JSON or not a dict/list
-                print(f"Warning: Could not parse or process LLM output for an article: {new_data_json_raw}")
+            for future in tqdm(as_completed(future_to_article), total=len(articles), desc="Extracting data"):
+                try:
+                    new_rows = future.result()
+                    if new_rows:
+                        all_new_rows.extend(new_rows)
+                except Exception as exc:
+                    article = future_to_article[future]
+                    print(f"An article generated an exception: {article.get('title', 'Unknown Title')}: {exc}")
 
         if all_new_rows:
             new_rows_df = pd.DataFrame(all_new_rows)
-            self.output_df = pd.concat([self.output_df, new_rows_df], ignore_index=True)
+            # Assign directly instead of concatenating with potentially existing sample data
+            self.output_df = new_rows_df.reindex(columns=self.cols, fill_value=None)
+        else:
+            # If no new rows are extracted, ensure output_df is still an empty DataFrame with correct columns
+            self.output_df = pd.DataFrame(columns=self.cols)
         
         return self.output_df
             

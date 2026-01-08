@@ -17,6 +17,7 @@ class LLMClient:
                 azure_endpoint=self.azure_endpoint,
                 api_key=self.api_key,
                 api_version="2024-05-01-preview",
+                max_retries=5,
             )
 
         except Exception as e:

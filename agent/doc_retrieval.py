@@ -1,11 +1,11 @@
 from typing import Any
 import pandas as pd
 import json
-from llm_util import LLMClient
+from .llm_util import LLMClient
 import os
 from Bio import Entrez
 import xml.etree.ElementTree as ET
-from verification import Verify
+from .verification import Verify
 
 class DocRetrieval:
     def __init__(self, file: str, prompt: str):
