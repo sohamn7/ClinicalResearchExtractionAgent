@@ -3,3 +3,4 @@
 .env
 *.jsonl
 venv/
+*.log

@@ -62,26 +62,27 @@ class Verify:
 
     def recreate_query(self, user_prompt: str, sample_df: pd.DataFrame, previous_queries: list[str]):
         """
-        Creates a new PubMed query if the previous one returned no results.
+        Creates a new, broader PubMed query if the previous one returned no results by strategically simplifying the PICO structure.
         """
         
-        prompt = f"""You are an expert search query creator. The previous PubMed search query failed to return any results. Your task is to generate a new, revised query.
+        prompt = f"""You are an expert PubMed query troubleshooter. The following structured PubMed query returned ZERO results, likely because it was too specific. Your task is to intelligently broaden the query to get some results.
 
-        Previous failed queries: "{previous_queries}"
+        The best way to broaden a query is to remove or simplify the least critical PICO concepts. Follow this hierarchy of simplification:
+        1.  **Attempt 1 (Remove Outcome):** First, try removing the 'Outcome' part of the query. The 'Population' and 'Intervention' are most important.
+        2.  **Attempt 2 (Remove Comparison):** If that still fails, remove the 'Comparison' part as well.
+        3.  **Attempt 3 (Simplify Intervention/Population):** As a last resort, simplify the 'Intervention' or 'Population' clauses by removing a restrictive keyword or using a broader term.
 
-        Analyze the original user request and sample data to create a broader or alternative query. Try using different keywords, simplifying the query, or using broader MeSH terms.
-
-        Original User Request: "{user_prompt}"
-        Sample Data Columns: {sample_df.columns.tolist()}
+        **Original User Request (PICO):** "{user_prompt}"
+        **Previous Failed Queries:** "{previous_queries}"
 
         ---
-        Instructions:
-        1.  Generate a new, revised PubMed search query.
-        2.  The query should be a concise string of keywords and operators.
-        3.  Return ONLY the new search query string.
+        **Example:**
+        - **Failed Query:** (("Diabetes Mellitus, Type 2"[mh] OR "type 2 diabetes"[tiab]) AND ("Metformin"[mh] OR "metformin"[tiab])) AND ("Blood Glucose"[mh] OR "glycemic control"[tiab])
+        - **Analysis:** This query includes Population, Intervention, and Outcome. The first step is to remove the Outcome.
+        - **New, Broader Query:** (("Diabetes Mellitus, Type 2"[mh] OR "type 2 diabetes"[tiab]) AND ("Metformin"[mh] OR "metformin"[tiab]))
         ---
 
-        Generate the new PubMed search query.
+        Based on the last failed query, generate the next logical attempt at a broader query. Do not repeat a previous query. Return ONLY the new query string.
         """
 
         return self.llm_extract(prompt)

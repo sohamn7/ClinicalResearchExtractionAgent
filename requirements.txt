@@ -1,4 +1,4 @@
-pandas
-python-dotenv
-openai
-biopython
+
+sentence-transformers
+scikit-learn
+faiss-cpu
