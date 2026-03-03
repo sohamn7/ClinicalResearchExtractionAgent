@@ -257,7 +257,7 @@ def run_evaluation():
         return
 
     # Take a small sample for testing
-    test_df = full_df.sample(n=10).reset_index()
+    test_df = full_df.sample(n=30).reset_index()
 
     # Get the indices of the rows used in test_df to exclude them from sample_df
     test_indices = test_df.index.tolist()

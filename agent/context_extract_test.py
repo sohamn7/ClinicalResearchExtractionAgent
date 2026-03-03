@@ -309,7 +309,7 @@ def run_evaluation():
     test_df = pd.DataFrame(test_rows)
     test_indices = [r['original_index'] for r in test_rows]
     remaining_df = full_df.drop(test_indices)
-    sample_df = remaining_df.sample(n=min(10, len(remaining_df))).reset_index(drop=True)
+    sample_df = remaining_df.sample(n=min(20, len(remaining_df))).reset_index(drop=True)
 
     extractor = Extract()
     extractor.user_prompt = "extract clinical data from studies for the anti-drug antibody (ADA) reactions from different therapeutic drugs in patients and patient groups"

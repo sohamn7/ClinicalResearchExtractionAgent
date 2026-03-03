@@ -36,6 +36,7 @@ class Extract:
         self.col_descriptions = {}  # Auto-generated column descriptions from sample data
         self.output_df = pd.DataFrame()
         self.user_prompt = ""
+        self.consistency_pairs = []
 
     def extract_data(self, context, sample_df):
         user_prompt = self.user_prompt
@@ -100,32 +101,44 @@ class Extract:
         return self.llm_extract(prompt)
 
     def generate_column_descriptions(self, sample_df):
-        """Generate 1-sentence descriptions per column from the sample data. Called once per run."""
-        prompt = f"""You are a clinical data expert. Given a sample dataset and a description of the extraction goal, describe what each column represents.
+        prompt = f"""You are a clinical data expert. Given a sample dataset and extraction goal, do two things:
 
         Goal: {self.user_prompt}
-
         Columns: {self.cols}
+        Sample data: {sample_df.head(3).to_json(orient='records')}
 
-        Sample data (first few rows):
-        {sample_df.head(3).to_json(orient='records')}
+        1. For each column, write a 1-sentence description of what it represents.
 
-        ---
-        For each column, write a 1-sentence description of:
-        - What type of value it holds (number, percentage, name, free text, etc.)
-        - What it specifically represents in the context of the extraction goal
+        2. Identify consistency pairs — columns that are so closely related that 
+        if one is found the other should almost always also be found. 
+        Two types:
+        - "rate_count": a percentage/rate column paired with its raw count column 
+        (e.g., percentage positive paired with number positive)
+        - "anchor_detail": a study identifier column paired with any detail column 
+        about that same study (e.g., trial_name paired with n_study)
+        Only include pairs you are confident about from the sample data.
 
-        Return your answer as a JSON object where keys are column names and values are the 1-sentence descriptions.
-        Example: {{"percentage": "The incidence rate (%) of the target outcome in the study population", "n_study": "Total number of patients enrolled or randomized in the primary study"}}
+        Return a JSON object with two keys:
+        - "descriptions": dict of column name to 1-sentence description
+        - "consistency_pairs": list of objects like 
+        {{"type": "rate_count", "cols": ["percentage", "n_positive"]}}
 
-        Return ONLY the JSON object, no other text.
+        Return ONLY the JSON, no other text.
         """
         raw = self.llm_extract(prompt)
         try:
-            self.col_descriptions = json.loads(clean_json_from_llm(raw))
-        except (json.JSONDecodeError, TypeError):
-            print(f"Warning: Could not parse column descriptions. Using column names as fallback.")
+            result = json.loads(clean_json_from_llm(raw))
+            if isinstance(result, list) and result:
+                result = result[0]
+            if isinstance(result, dict):
+                self.col_descriptions = result.get("descriptions", {})
+                self.consistency_pairs = result.get("consistency_pairs", [])
+            else:
+                raise ValueError("Parsed JSON is not a dictionary")
+        except Exception as e:
+            print(f"Warning: Could not parse column descriptions properly: {e}")
             self.col_descriptions = {col: col for col in self.cols}
+            self.consistency_pairs = []
 
     def extract_core_text(self, context, sample_df):
         user_prompt = self.user_prompt
@@ -136,97 +149,58 @@ class Extract:
         else:
             col_info = "\n".join([f"- {col}" for col in self.cols])
 
-        prompt = f"""You are a clinical immunogenicity data analyst. Your task is to find verbatim quotes from a research paper to populate structured extraction columns.
+        prompt = f"""You are a clinical data extraction expert. Your task is to read a full research paper and write a concise prose summary containing all the data points needed for structured extraction.
 
-        ===== EXTRACTION GOAL =====
-        {user_prompt}
+        Extraction goal: {user_prompt}
 
-        ===== TARGET COLUMNS =====
+        Target columns to extract (what data each column needs):
         {col_info}
 
-        ===== SAMPLE DATA (shows expected format and values for each column) =====
+        Sample data showing what a good context summary looks like and the expected values for each column:
         {sample_df.to_json(orient='records')}
 
-        ===== RESEARCH PAPER TEXT =====
+        Research Paper Text:
         {context}
 
-        ===================================================================
-        COLUMN CATEGORIES — different extraction rules apply:
+        ---
+        RULES:
 
-        GROUP A — ADA IMMUNOGENICITY COLUMNS (must cite explicit ADA data):
-        - percentage: The ADA positivity rate (%) in this study's treatment population
-        - n_positive: Number of patients who developed anti-drug antibodies in this study
-        - method: The specific named assay used to detect ADA (e.g., ELISA, ECL assay)
+        ### RULE 1 — UNIFIED NARRATIVE (HIGHEST PRIORITY)
+        Write a single prose summary paragraph covering all data relevant to the extraction goal and target columns. Do NOT organize by column names, do NOT use headers like "## percentage" or "## n_study". Write it as a natural, flowing paragraph — similar in style to the context fields shown in the sample data.
 
-        GROUP B — STUDY METADATA COLUMNS (general study info, no ADA keyword required):
-        - n_study: Total number of patients enrolled/randomized/treated in this study
-        - trial_name: The formal name, acronym, or ClinicalTrials.gov ID of this study
-        - patient_characteristics: Actual reported demographics (age, sex, disease status)
-        - dosage: The specific drug dose and schedule administered to patients
-        - notes: Any ADA-specific observation (titers, transient positivity, clinical impact of ADA)
+        ### RULE 2 — COLUMN-DRIVEN COMPLETENESS
+        For each target column, find the relevant data point in the paper and include it in your summary. Study the column descriptions and sample data to understand exactly what each column needs:
+        - If a column expects a number, find and include that number.
+        - If a column expects a name or identifier, find and include it.
+        - If a column expects a description, include the relevant description.
+        Every target column should be addressed in your summary. If the paper truly has no data for a column, that is fine — do not fabricate data.
 
-        ===================================================================
-        ABSOLUTE EXCLUSION LIST — NEVER extract these for GROUP A columns (percentage, n_positive):
-        - Objective response rates (ORR), partial/complete responses (PR, CR), disease control rates
-        - Adverse event (AE) rates, cytokine release syndrome (CRS), infusion reactions, toxicity grades
-        - Progression-free survival (PFS), overall survival (OS)
-        - Circulating tumor cell (CTC) counts or biomarker positivity unrelated to ADA
-        - Pharmacokinetic (PK) data (Cmax, AUC, half-life, drug concentrations)
-        - Data from OTHER studies cited within this paper (background references, comparison studies)
+        ### RULE 3 — VERBATIM NUMBERS
+        All numbers, percentages, p-values, dosages, and statistical values must be copied exactly from the paper. Do not round, paraphrase, or calculate. If the paper says "37.5%", write "37.5%", not "about 38%".
 
-        If the quote does not EXPLICITLY mention ADA, immunogenicity, or anti-[drug name] antibodies for GROUP A — write NOT FOUND.
+        ### RULE 4 — SAME-STUDY ONLY
+        Only include data from THIS study's own results. Do not include results cited from other published studies, background literature, or comparison references. If the paper says "Previous studies showed 15% incidence", do NOT include that — only include this paper's own findings.
 
-        ===================================================================
-        TWO-STEP PROCESS:
+        ### RULE 5 — NEGATIVE FINDINGS ARE DATA
+        Explicit statements of absence are valid and important data points. Phrases like "no responses were detected", "0% incidence", "none of the patients developed antibodies" MUST be included in the summary. Do NOT skip them.
 
-        ### STEP 1 — IDENTIFY SECTIONS
-        For GROUP A columns (percentage, n_positive, method):
-        - Look for sections explicitly about immunogenicity, ADA, or antibody detection
-        - If no such section exists, write NONE
+        ### RULE 6 — SYNONYM AWARENESS
+        Clinical papers may use different terminology to describe the same concept. Look for synonyms, abbreviations, and alternative phrasings that map to your target columns. For example:
+        - "anti-drug antibodies" = "ATAs" = "anti-therapeutic antibodies" = "immunogenicity"
+        - "overall survival" = "OS", "adverse events" = "AEs" = "toxicities"
+        - "enrolled" = "randomized" = "included in the analysis"
+        Use the column descriptions and sample data to understand which terms map to your columns.
 
-        For GROUP B columns (n_study, trial_name, patient_characteristics, dosage, notes):
-        - Look in Methods, Study Design, Patients, Results, and Introduction sections
-        - IMPORTANT: Nearly every clinical paper states an enrollment number — do NOT write NONE for n_study unless the paper truly has none
-        - IMPORTANT: Always look for a study name/acronym/NCT number for trial_name
+        ### RULE 7 — SAMPLE-GUIDED STYLE AND LENGTH
+        Study the sample data to understand the expected format. Your summary should be similar in length and detail to the context fields shown in the sample data. If sample contexts are detailed multi-sentence paragraphs, write a detailed paragraph. If they are brief, write briefly.
 
-        Write: **column_name** → [section or NONE] — [brief reason]
-
-        ### STEP 2 — EXTRACT VERBATIM QUOTES
-        Using ONLY the sections in Step 1:
-
-        For GROUP A (percentage, n_positive, method):
-        - Quote MUST explicitly mention ADA/immunogenicity AND cite a specific number/assay
-        - Negative ADA results are valid: "no ADA detected", "all patients remained ADA-negative"
-        - Write NOT FOUND if no ADA-specific quote exists
-
-        For GROUP B (n_study, trial_name, patient_characteristics, dosage, notes):
-        - Extract the clearest verbatim sentence
-        - n_study: Use the ITT/FAS/safety-analysis-set count (typically stated near start of Results)
-        - trial_name: Look for study acronyms, "the [Name] study", or NCT numbers in Introduction or Methods
-        - patient_characteristics: Must be ACTUAL reported demographics (e.g., "median age was 58 years, 71% male"), NOT eligibility criteria ("patients aged ≥18")
-        - dosage: Specific amount and schedule (e.g., "150 mg SC every 4 weeks")
-        - notes: An ADA-specific observation if present; otherwise NOT FOUND
-        - Write NOT FOUND only if the paper truly has no content for the column
-
-        ===================================================================
-        OUTPUT FORMAT:
-
-        ### STEP 1: Section Relevance
-        **column_name** → [section or NONE] — [reason]
-
-        ### STEP 2: Extracted Quotes
-
-        ## [Column Name]
-        <verbatim quote, or NOT FOUND>
-
-        (one section per column, same order as target columns)
-        ===================================================================
-        Now extract from the Research Paper Text above.
+        ---
+        Now write the prose context summary for the provided Research Paper Text.
         """
         return self.llm_extract(prompt)
 
     def verify_context(self, extracted_context, sample_df):
-        """Two-tier verification: strict for ADA columns, permissive for metadata columns."""
+        """Verify and clean the extracted prose context. Checks accuracy, relevance, and internal consistency."""
         user_prompt = self.user_prompt
 
         # Build column descriptions block
@@ -235,54 +209,45 @@ class Extract:
         else:
             col_info = "\n".join([f"- {col}" for col in self.cols])
 
-        prompt = f"""You are a clinical data verification expert reviewing extracted quotes from a research paper.
+        prompt = f"""You are a clinical data verification expert. Your task is to review a prose context summary extracted from a research paper and ensure it is accurate, relevant, and internally consistent.
 
         Extraction goal: {user_prompt}
 
-        Column definitions:
+        Target columns (what data will be extracted from this context):
         {col_info}
 
-        Sample data showing expected values:
+        Sample data showing expected values for each column:
         {sample_df.to_json(orient='records')}
 
-        ===== EXTRACTED QUOTES TO VERIFY =====
+        Extracted context to verify:
         {extracted_context}
 
-        ===================================================================
-        COLUMN GROUPS — apply different verification standards:
+        Consistency pairs (columns that should logically co-occur):
+        {self.consistency_pairs}
 
-        GROUP A — ADA IMMUNOGENICITY COLUMNS (strict verification):
-        - percentage, n_positive, method
+        ---
+        RULES:
 
-        GROUP B — STUDY METADATA COLUMNS (lenient verification):
-        - n_study, trial_name, patient_characteristics, dosage, notes
+        ### RULE 1 — PRESERVE FORMAT
+        Output the verified context as the same prose narrative format. Do NOT reorganize into columns, headers, or bullet points. Keep it as a flowing paragraph.
 
-        ===================================================================
-        VERIFICATION RULES:
+        ### RULE 2 — KEEP BY DEFAULT
+        Your default action is to KEEP every sentence. Only remove or modify content that is clearly wrong, fabricated, or irrelevant to the extraction goal. Do not remove content just because you are unsure — when in doubt, keep it.
 
-        FOR GROUP A COLUMNS (percentage, n_positive, method) — STRICT:
-        REJECT (replace with NOT FOUND) if the quote:
-        - Does NOT explicitly mention ADA, immunogenicity, anti-drug antibodies, or anti-[drug name] antibodies
-        - Is about response rates, adverse events, survival, PK data, or CTCs instead of ADA
-        - Is from another study cited within the paper (not this paper's own results)
-        - For 'method': does NOT name a SPECIFIC assay (generic phrases like "immunogenicity was assessed" are REJECTED)
-        - For 'percentage'/'n_positive': does NOT state a specific number or percentage for ADA positivity
-        KEEP if the quote explicitly and directly reports ADA/immunogenicity data for this study.
+        ### RULE 3 — CONSISTENCY CHECK
+        Use the consistency pairs to verify internal logic:
+        - If a rate/percentage is stated, its corresponding count column should be mathematically plausible.
+        - If a study name is given, the enrollment numbers should correspond to that same study.
+        - If one column in a pair has data but its partner is completely absent from the context, flag this as a concern — but do NOT fabricate the missing data. Just ensure the present data is accurate.
 
-        FOR GROUP B COLUMNS (n_study, trial_name, patient_characteristics, dosage, notes) — LENIENT:
-        REJECT only if the quote is CLEARLY WRONG:
-        - n_study: REJECT only if the number is clearly a subgroup/screening count, not total enrollment
-        - trial_name: REJECT only if the quote has no trial name, acronym, or NCT number at all
-        - patient_characteristics: REJECT only if the quote is eligibility criteria ("patients aged ≥18 were eligible") rather than actual reported demographics
-        - dosage: REJECT only if no specific dose amount is mentioned
-        - notes: REJECT only if the quote is a completely non-ADA general statement totally unrelated to immunogenicity
-        WHEN IN DOUBT FOR GROUP B — KEEP the quote.
+        ### RULE 4 — WRONG-STUDY REMOVAL
+        Remove any data that clearly comes from a different study cited within the paper (background references, prior literature), not from the study being analyzed. Clues: "Previous studies showed...", "In a prior trial...", "Smith et al. reported...".
 
-        ===================================================================
-        OUTPUT FORMAT:
-        Output ONLY the ## [Column Name] sections.
-        Each section contains either the original quote (if kept) or NOT FOUND (if rejected).
-        Do NOT include STEP 1 analysis, commentary, or explanations.
+        ### RULE 5 — NEGATIVE FINDINGS ARE VALID
+        Do NOT remove explicit negative results. Statements like "no responses were detected", "0% incidence", "none of the patients developed antibodies" are valid and important data points. They must be preserved.
+
+        ---
+        Now output the verified prose context summary.
         """
         return self.llm_extract(prompt)
 
