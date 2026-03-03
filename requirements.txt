@@ -2,3 +2,5 @@
 sentence-transformers
 scikit-learn
 faiss-cpu
+sentencepiece
+protobuf

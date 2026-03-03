@@ -87,10 +87,57 @@ class DocRetrieval:
             print(f"Error searching PMC: {e}")
             return []
 
+    @staticmethod
+    def _extract_body_text(body):
+        """
+        Extract text from a PMC XML <body> element, preserving section structure.
+        Sections are formatted as '## Section Title' headers followed by paragraph text.
+        Uses itertext() to capture all inline text (including <italic>, <bold>, <xref>, etc.).
+        """
+        if body is None:
+            return ""
+
+        parts = []
+
+        def _get_paragraph_text(p_elem):
+            """Get all text from a <p> element including inline children."""
+            text = "".join(p_elem.itertext()).strip()
+            return text if text else None
+
+        def _process_section(sec_elem):
+            """Recursively process a <sec> element and its nested <sec> children."""
+            # Get section title
+            title_elem = sec_elem.find('title')
+            if title_elem is not None:
+                title_text = "".join(title_elem.itertext()).strip()
+                if title_text:
+                    parts.append(f"\n## {title_text}")
+
+            # Get direct <p> children of this section (not nested in sub-sections)
+            for child in sec_elem:
+                if child.tag == 'p':
+                    p_text = _get_paragraph_text(child)
+                    if p_text:
+                        parts.append(p_text)
+                elif child.tag == 'sec':
+                    _process_section(child)
+
+        # Process top-level children of <body>
+        for child in body:
+            if child.tag == 'sec':
+                _process_section(child)
+            elif child.tag == 'p':
+                # Paragraphs directly under <body> (not in any section)
+                p_text = _get_paragraph_text(child)
+                if p_text:
+                    parts.append(p_text)
+
+        return "\n".join(parts).strip()
 
     def fetch_summary(self, pmc_ids):
         """
         Get metadata (title, authors, full text) for PMC articles in batches.
+        Full text preserves section structure with ## headers.
         """
         if not pmc_ids:
             return
@@ -119,11 +166,7 @@ class DocRetrieval:
                     if article_id_node is not None:
                         article_pmcid = article_id_node.text
                         body = article_node.find('body')
-                        article_text = ""
-                        if body is not None:
-                            paragraphs = body.findall('.//p')
-                            # Join non-empty paragraph texts
-                            article_text = "\n".join([p.text for p in paragraphs if p.text and p.text.strip()])
+                        article_text = self._extract_body_text(body)
                         full_texts[article_pmcid] = article_text
 
                 # 4. Combine metadata and full text
@@ -136,7 +179,7 @@ class DocRetrieval:
                         "pmc_id": pmc_id,
                         "title": record.get('Title', 'No title found'),
                         "authors": record.get('AuthorList', []),
-                        "text": full_texts.get(pmc_id, "")  # Get the mapped full text
+                        "text": full_texts.get(pmc_id, "")
                     }
             except Exception as e:
                 print(f"Warning: Batch fetch failed for IDs {ids_str}. Error: {e}")

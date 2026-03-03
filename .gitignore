@@ -4,3 +4,4 @@
 *.jsonl
 venv/
 *.log
+temp_update_script.py
